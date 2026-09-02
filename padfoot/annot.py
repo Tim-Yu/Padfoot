@@ -15,11 +15,14 @@ import gzip
 from Bio import Align
 import os
 import copy
+import re
 import numpy as np
 import pandas as pd
 import logging
 
 logger = logging.getLogger()
+
+BND_MATE_RE = re.compile(r"[\[\]]([^:\[\]]+):(\d+)[\[\]]")
 
 class SV(object):
     __slots__ = ("bp_1", "direction_1", "bp_2", "direction_2", "supp",'supp_read_ids', 'has_ins', 'sv_type','vaf','loh', 'prec',\
@@ -195,6 +198,73 @@ def get_bps(vcf_file):
         svs[vcf_id]=(SV(bp_1, dir1, bp_2, dir2, supp, has_ins, sv_type,vaf, vcf_id, is_single, vntr,ins_seq, cluster_id, detailed_type, hp1, hp2))
     return list(svs.values())
 
+def get_savana_bps(vcf_file):
+    svs = defaultdict(list)
+    vcf = pysam.VariantFile(vcf_file)
+    seen_mates = set()
+    for var in vcf:
+        if var.id in seen_mates:
+            continue
+        bp_1 = (var.chrom, var.pos)
+        sv_type = var.info.get('SVTYPE', '')
+        dir_ls = var.info.get('BP_NOTATION', '')
+        dir1, dir2 = (dir_ls[0], dir_ls[1]) if len(dir_ls) == 2 else ('','')
+
+        supp = int(var.info.get('TUMOUR_READ_SUPPORT', 0))
+        vaf_values = var.info.get('TUMOUR_AF', (0,))
+        if not isinstance(vaf_values, (tuple, list)):
+            vaf_values = (vaf_values,)
+        vaf = max([float(x) for x in vaf_values]) if vaf_values else 0
+        hp_counts = var.info.get('TUMOUR_ALT_HP', (0, 0, 0))
+        hp1 = hp2 = savana_haplotype(hp_counts)
+        vcf_id = re.sub(r'_[12]$', '', var.id)
+        bp_2 = bp_1
+        ins_seq = ''
+
+        if sv_type == 'BND':
+            mate = parse_bnd_alt(var.alts[0])
+            if not mate:
+                logger.warning("Skipping Savana BND with unparseable ALT: %s %s", var.id, var.alts[0])
+                continue
+            chr2, pos2 = mate
+            bp_2 = (chr2, pos2)
+            if 'MATEID' in var.info.keys():
+                seen_mates.add(var.info['MATEID'])
+
+        elif sv_type in ['DEL', 'DUP', 'INV']:
+            svlen = abs(int(var.info.get('SVLEN', 0)))
+            end_pos = var.stop if var.stop else var.pos + svlen
+            bp_2 = (var.chrom, end_pos)
+
+        elif sv_type == 'INS':
+            bp_2 = bp_1
+            if var.alts and not var.alts[0].startswith('<'):
+                ins_seq = var.alts[0]
+
+        cluster_id = var.info.get('MATEID', '')
+        detailed_type = var.info.get('CLASS', '')
+        svs[vcf_id]=(SV(bp_1, dir1, bp_2, dir2, supp, '', sv_type, vaf, vcf_id, False, False, ins_seq, cluster_id, detailed_type, hp1, hp2))
+    return list(svs.values())
+
+def savana_haplotype(hp_counts):
+    if not isinstance(hp_counts, (tuple, list)) or len(hp_counts) < 2:
+        return 0
+    hp1, hp2 = int(hp_counts[0]), int(hp_counts[1])
+    if hp1 == hp2:
+        return 0
+    return 1 if hp1 > hp2 else 2
+
+def parse_bnd_alt(alt):
+    match = BND_MATE_RE.search(alt)
+    if not match:
+        return None
+    return match.group(1), int(match.group(2))
+
+def get_SVs(vcf_file, caller='severus'):
+    if caller == 'savana':
+        return get_savana_bps(vcf_file)
+    return get_bps(vcf_file)
+
 def fill_missing_segments_cn1(
     chr_lens: Dict[str, int],
     hp1ls: Dict[str, List[List[int]]],
@@ -358,6 +428,61 @@ def get_CNA(cna_vcf, svs):
                 cna.dir1 = 'DEL'
     check_cn_altering_svs(svs, cn1_cov)
     return(CNAs, ploidy)
+
+def get_savana_CNA(cna_tsv, svs):
+    df = pd.read_csv(cna_tsv, sep='\t')
+    hp1ls = defaultdict(list)
+    hp2ls = defaultdict(list)
+    LOH = defaultdict(list)
+    CNAs = defaultdict(list)
+    ploidy = []
+    for _, row in df.sort_values(['chromosome', 'start', 'end']).iterrows():
+        ref_id = row['chromosome']
+        pos_1, pos_2 = int(row['start']), int(row['end'])
+        total_cn = float(row['copyNumber'])
+        minor_cn = max(0.0, min(float(row['minorAlleleCopyNumber']), total_cn))
+        major_cn = max(0.0, total_cn - minor_cn)
+        hp1ls[ref_id].append((major_cn, pos_1, pos_2))
+        hp2ls[ref_id].append((minor_cn, pos_1, pos_2))
+        if minor_cn <= 0.5:
+            LOH[ref_id].append((pos_1, pos_2))
+
+    for hp, hpls in enumerate([hp1ls, hp2ls]):
+        ploidy_hp = 0
+        len_cn = 0
+        for ref_id, segments in hpls.items():
+            for cn, pos_1, pos_2 in segments:
+                sv1 = find_segment_boundary_sv(svs, ref_id, pos_1, '-')
+                sv2 = find_segment_boundary_sv(svs, ref_id, pos_2, '+')
+                loh = any(loh_start == pos_1 and loh_end == pos_2 for loh_start, loh_end in LOH.get(ref_id, []))
+                CNAs[(ref_id, hp+1)].append(CNA(ref_id, pos_1, pos_2, cn, hp+1, loh, sv1, sv2))
+                seg_len = max(1, pos_2 - pos_1)
+                len_cn += seg_len
+                ploidy_hp += cn * seg_len
+        ploidy.append(round(ploidy_hp/len_cn) if len_cn else 1)
+
+    check_hp_svs(CNAs)
+    for (ref,hp), cnas in CNAs.items():
+        pl = ploidy[hp-1]
+        for cna in cnas:
+            if cna.cn > pl:
+                cna.dir1 = 'AMP'
+            elif cna.cn < pl:
+                cna.dir1 = 'DEL'
+    return(CNAs, ploidy)
+
+def find_segment_boundary_sv(svs, ref_id, pos, direction):
+    boundary = [(ref_id, pos),(ref_id, pos+1),(ref_id, pos-1)]
+    if direction == '-':
+        candidates = [sv for sv in svs if (sv.bp_1 in boundary and sv.direction_1 == '-') or (sv.bp_2 in boundary and sv.direction_2 == '-')]
+    else:
+        candidates = [sv for sv in svs if (sv.bp_1 in boundary and sv.direction_1 == '+') or (sv.bp_2 in boundary and sv.direction_2 == '+')]
+    return candidates[0] if candidates else ''
+
+def get_CNAs(cna_file, svs, caller='wakhan'):
+    if caller == 'savana':
+        return get_savana_CNA(cna_file, svs)
+    return get_CNA(cna_file, svs)
 
 def check_cn_altering_svs(svs, cn1_cov):
     for sv in svs:
@@ -566,20 +691,26 @@ def run_command(cmd):
 
 def write_ins(svs, ref, t, specie, run_repeatmasker):
     fa_out = open('temp_ins.fa', 'w')
+    wrote_sequence = False
     for sv in svs:
         if sv.ins_seq:
             fa_out.write('>' + sv.vcf_id + '\n')
             fa_out.write(sv.ins_seq)
             fa_out.write('\n')
+            wrote_sequence = True
         elif sv.has_ins:
             fa_out.write('>' + sv.vcf_id + '\n')
             fa_out.write(sv.has_ins)
             fa_out.write('\n')
+            wrote_sequence = True
     fa_out.close()
+    if not wrote_sequence:
+        return False
     if run_repeatmasker:
         run_command(f"RepeatMasker -species {specie} temp_ins.fa")
     run_command(f"minimap2 -ax map-ont {ref} temp_ins.fa -k 17 -y -K 5G -t {t} --eqx | samtools sort -@ {t} -m 4G > temp_ins.bam")
     run_command(f"samtools index -@ {t} temp_ins.bam")
+    return True
     
 
 def get_repeat(svls):
@@ -709,9 +840,12 @@ def annot_ins(svs, ref,t, rm_bed, specie, run_repeatmasker):
     svls = defaultdict(list)
     for sv in svs:
          svls[sv.vcf_id] = sv
-    write_ins(svs, ref, t, specie, run_repeatmasker)
-    get_repeat(svls)
-    get_align(svls)
+    has_insertions = write_ins(svs, ref, t, specie, run_repeatmasker)
+    if has_insertions:
+        get_repeat(svls)
+        get_align(svls)
+    else:
+        logger.info("No insertion sequences found; skipping insertion repeat/alignment annotation")
     get_tel(svs)
     annot_bp_repeat(svls, rm_bed)
     
@@ -819,10 +953,10 @@ def annotate_things(args):
     cna_vcf, vcf_file, t, ref, out_dir = args.cna_vcf, args.vcf_file, args.threads, args.ref, args.out_dir
     by_gene = defaultdict(list)
     (genes, exon_pos) = get_genes(args.gff_file)
-    svs = get_bps(vcf_file)
+    svs = get_SVs(vcf_file, args.sv_caller)
     cnas = []
     if cna_vcf:
-        cnas, ploidy = get_CNA(cna_vcf, svs)
+        cnas, ploidy = get_CNAs(cna_vcf, svs, args.cna_caller)
         annot_CNAs(genes, cnas, ploidy, by_gene)
     annot_SVS(genes, exon_pos, svs, by_gene)
     if args.specie == 'human':

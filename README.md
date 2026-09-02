@@ -1,7 +1,7 @@
 # Padfoot
 <p>
 <img src="docs/logo.png" alt="Padfoot logo" align="left" style="width:100px;"/>
-<b>Padfoot</b> is a structural variant (SV) and copy number alteration (CNA) annotation tool designed to work seamlessly with output from <b>Severus</b> and <b>Wakhan</b>. It provides biological and functional annotations for SVs and CNAs, enabling downstream interpretation of genomic alterations.
+<b>Padfoot</b> is a structural variant (SV) and copy number alteration (CNA) annotation tool designed to work seamlessly with output from <b>Severus</b>, <b>Wakhan</b>, and <b>Savana</b>. It provides biological and functional annotations for SVs and CNAs, enabling downstream interpretation of genomic alterations.
 </p>
 
 <br/>
@@ -11,6 +11,7 @@
 
 - Annotates somatic SVs called by [Severus](https://github.com/KolmogorovLab/Severus)
 - Annotates CNAs reported by [Wakhan](https://github.com/KolmogorovLab/Wakhan)
+- Annotates Savana classified somatic SV VCFs and segmented absolute copy-number TSVs
 - Outputs functional annotations for prioritization
 - Designed for cancer genome analysis using long-read data
 
@@ -50,6 +51,12 @@ conda activate padfoot_env
 padfoot --severus-vcf severus_somatic.vcf --wakhan-vcf wakhan_cna.vcf --ref ref.fa --out-dir padfoot_out -t 16 --specie human 
 ```
 
+Savana input can be run with caller-specific format flags:
+
+```
+padfoot --sv-vcf sample.classified.somatic.vcf --sv-caller savana --cna-file sample_segmented_absolute_copy_number.tsv --cna-caller savana --ref ref.fa --out-dir padfoot_savana_out -t 16 --specie human
+```
+
 ## Inputs and Parameters
 
 ### Required
@@ -57,6 +64,10 @@ padfoot --severus-vcf severus_somatic.vcf --wakhan-vcf wakhan_cna.vcf --ref ref.
 ```
 --severus-vcf   path to Severus vcf
 --wakhan-vcf    path to Wakhan vcf
+--sv-vcf        generic alias for SV VCF input
+--sv-caller     SV input format: severus or savana [severus]
+--cna-file      generic alias for CNA VCF/TSV input
+--cna-caller    CNA input format: wakhan or savana [wakhan]
 --ref           path to reference fasta file (needs to be indexed)
 --out-dir       path to output directory
 ```
