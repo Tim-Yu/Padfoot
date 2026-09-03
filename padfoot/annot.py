@@ -686,8 +686,16 @@ def check_complexSV(cnas, svs):
          svls[sv.vcf_id] = sv
 
 def run_command(cmd):
-    p = subprocess.Popen(cmd, shell= True)
-    p.wait()
+    result = subprocess.run(
+        ["bash", "-o", "pipefail", "-c", cmd],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        logger.error("External command failed (%d): %s", result.returncode, cmd)
+        if result.stderr:
+            logger.error(result.stderr.rstrip())
+        raise RuntimeError(f"External command failed: {cmd}")
 
 def write_ins(svs, ref, t, specie, run_repeatmasker):
     fa_out = open('temp_ins.fa', 'w')
@@ -717,7 +725,7 @@ def get_repeat(svls):
     if os.path.exists('temp_ins.fa.out'):
         rep_file = open('temp_ins.fa.out', 'r')
     else:
-        logger.warning("RepeatMasker output file not found: %s. RepeatMasker may have failed.")
+        logger.warning("RepeatMasker output file not found: temp_ins.fa.out")
         return ''
     reps = defaultdict(int)
     svrep = defaultdict(list)

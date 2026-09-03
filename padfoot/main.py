@@ -73,11 +73,14 @@ def _check_external_dependencies(args, ref_path=None):
         )
         sys.exit(1)
     
-    required_bins = ["RepeatMasker"]
-    missing_bins = [tool for tool in required_bins if shutil.which(tool) is None]
-    if missing_bins:
-        args.run_repeatmasker = False
-        logger.info('RepeatMasker is not found... \n Skipping RepeatMasker')
+    if shutil.which("RepeatMasker") is None:
+        if args.run_repeatmasker:
+            logger.error(
+                "RepeatMasker is required for insertion repeat annotation but was not found in PATH. "
+                "Install and configure RepeatMasker/FamDB, or use --skip_RepeatMasker."
+            )
+            sys.exit(1)
+        logger.info("RepeatMasker is not found; insertion repeat annotation was skipped")
 
     if ref_path is not None:
         if not os.path.exists(ref_path):
