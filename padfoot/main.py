@@ -155,6 +155,9 @@ def main():
     parser.add_argument("--ploidy", dest="ploidy", type=float, default=None, metavar="float",
                         help="tumour ploidy (mean total copy number) used as the copy-number baseline: a haplotype or allele "
                              "is AMP above round(ploidy/2) and DEL below it [estimated from the CN profile when absent]")
+    parser.add_argument("--cancer-genes", dest="cancer_genes", default=None, metavar="path",
+                        help="cancer gene table (TSV with Gene_symbol, Role_in_cancer, fusion) used with --specie human "
+                             "[bundled beds/cancer_genes.tsv]")
     parser.add_argument("--ploidy-file", dest="ploidy_file", default=None, metavar="path",
                         help="TSV with a 'ploidy' column to read the tumour ploidy from: SAVANA *_fitted_purity_ploidy.tsv or "
                              "Wakhan solutions_ranks.tsv (the rank-1 row is used); ignored when --ploidy is given")
@@ -168,6 +171,8 @@ def main():
     args.ref = os.path.abspath(args.ref)
     if args.ploidy_file:
         args.ploidy_file = os.path.abspath(args.ploidy_file)
+    if args.cancer_genes:
+        args.cancer_genes = os.path.abspath(args.cancer_genes)
 
     os.makedirs(args.out_dir, exist_ok=True)
 
@@ -212,6 +217,10 @@ def main():
         sys.exit(1)
 
     logger.info("Reference FASTA index found: %s.fai", args.ref)
+
+    if args.cancer_genes and not os.path.exists(args.cancer_genes):
+        logger.error("Cancer gene table does not exist: %s", args.cancer_genes)
+        sys.exit(1)
 
     if args.ploidy is not None:
         if not args.ploidy > 0:

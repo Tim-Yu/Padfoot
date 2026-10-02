@@ -15,7 +15,16 @@ def generate_gff(new_gff, gff_name):
     exonls = []
     old_gene_name = ''
     old_strand = ''
+    old_ref_id = ''
     genes = defaultdict(list)
+
+    def flush():
+        # write the gene collected so far under ITS OWN chromosome (not the chromosome of the row that ends it)
+        if gene_ls:
+            gene_ls[-1].append(exonls)
+            lns = [x[0][2] - x[0][1] for x in gene_ls[1:]]
+            ind = lns.index(max(lns))
+            genes[(old_ref_id, old_gene_name, old_strand)] = [gene_ls[0]] + gene_ls[ind+1]
     for line in fopen:
         if not 'gene_type=protein_coding' in line:
             continue
@@ -25,13 +34,10 @@ def generate_gff(new_gff, gff_name):
         if typ == 'CDS':
             continue
         if typ == 'gene':
-            if gene_ls:
-                gene_ls[-1].append(exonls)
-                lns = [x[0][2] - x[0][1] for x in gene_ls[1:]]
-                ind = lns.index(max(lns))
-                genes[(ref_id, old_gene_name, old_strand)] = [gene_ls[0]] + gene_ls[ind+1]
+            flush()
             old_gene_name = gene_name
             old_strand =  strand
+            old_ref_id = ref_id
             gene_ls = [(typ,start, end)]
             exonls = []
         elif typ == 'transcript':
@@ -44,6 +50,7 @@ def generate_gff(new_gff, gff_name):
             if typ == 'exon':
                 typ = 'exon' + [l.split('=')[1] for l in line.split()[-1].split(';') if 'exon_number' in l][0]
             exonls.append((typ,start, end))
+    flush()   # the last gene of the file
 
     out_file3 = gff_name
     with open(out_file3, "w") as fout3:

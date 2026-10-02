@@ -1066,17 +1066,32 @@ def cancer_annot_genes(by_gene, cancer_genes):
                 gs.score[hp] += 2
                 gs.impact[hp] = 'Oncogenic_fusion'
                              
-def cancer_annot(svs, by_gene):
+BEDS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'beds'))
+# Bundled copy of https://raw.githubusercontent.com/aysegokce/PadfootFiles/refs/heads/main/cancer_genes.tsv
+# (PadfootFiles commit 92c1842e, 2025-07-11; retrieved 2026-10-02; see beds/README.md). Padfoot used to download it on
+# every human run, which made the tool fail on nodes without internet access.
+CANCER_GENES_PATH = os.path.join(BEDS_DIR, 'cancer_genes.tsv')
 
-    url = 'https://raw.githubusercontent.com/aysegokce/PadfootFiles/refs/heads/main/cancer_genes.tsv'
-    df = pd.read_csv(url, sep='\t')
+def load_cancer_genes(path=None):
+    """Read the cancer-gene table (columns Gene_symbol, Role_in_cancer, fusion, ...) into the two lookups
+    cancer_annot_svs() / cancer_annot_genes() use: {symbol: role} and {symbol: [fusion partner, ...]}."""
+    path = path or CANCER_GENES_PATH
+    df = pd.read_csv(path, sep='\t')
+    missing = [c for c in ('Gene_symbol', 'Role_in_cancer', 'fusion') if c not in df.columns]
+    if missing:
+        raise ValueError(f"{path}: missing column(s) {', '.join(missing)}")
     cancer_genes = defaultdict(list)
     fusion = defaultdict(list)
     for index, row in df.iterrows():
         if not pd.isna(row['fusion']):
             fusion[row['Gene_symbol']] = row['fusion'].split(',')
-        if not pd.isna(row['Role_in_cancer']):    
+        if not pd.isna(row['Role_in_cancer']):
             cancer_genes[row['Gene_symbol']] = row['Role_in_cancer']
+    return cancer_genes, fusion
+
+def cancer_annot(svs, by_gene, path=None):
+    logger.info("Cancer gene table: %s", path or CANCER_GENES_PATH)
+    cancer_genes, fusion = load_cancer_genes(path)
     cancer_annot_svs(svs, cancer_genes, fusion)
     cancer_annot_genes(by_gene, cancer_genes)
 
@@ -1115,7 +1130,7 @@ def annotate_things(args):
         annot_CNAs(genes, cnas, baselines, by_gene)
     annot_SVS(genes, exon_pos, svs, by_gene)
     if args.specie == 'human':
-        cancer_annot(svs, by_gene)
+        cancer_annot(svs, by_gene, getattr(args, 'cancer_genes', None))
     annot_ins(svs, ref,t, args.rm_file, args.specie, args.run_repeatmasker)
     get_microhomology(svs, ref)
     output_svs(svs, out_dir)
