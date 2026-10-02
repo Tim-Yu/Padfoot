@@ -48,13 +48,13 @@ conda activate padfoot_env
 ## Quick Usage
 
 ```
-padfoot --severus-vcf severus_somatic.vcf --wakhan-vcf wakhan_cna.vcf --ref ref.fa --out-dir padfoot_out -t 16 --specie human 
+padfoot --severus-vcf severus_somatic.vcf --wakhan-vcf wakhan_cna.vcf --ploidy-file solutions_ranks.tsv --ref ref.fa --out-dir padfoot_out -t 16 --specie human
 ```
 
 Savana input can be run with caller-specific format flags:
 
 ```
-padfoot --sv-vcf sample.classified.somatic.vcf --sv-caller savana --cna-file sample_segmented_absolute_copy_number.tsv --cna-caller savana --ref ref.fa --out-dir padfoot_savana_out -t 16 --specie human
+padfoot --sv-vcf sample.classified.somatic.vcf --sv-caller savana --cna-file sample_segmented_absolute_copy_number.tsv --cna-caller savana --ploidy-file sample_fitted_purity_ploidy.tsv --ref ref.fa --out-dir padfoot_savana_out -t 16 --specie human
 ```
 
 ## Inputs and Parameters
@@ -76,6 +76,10 @@ padfoot --sv-vcf sample.classified.somatic.vcf --sv-caller savana --cna-file sam
 
 ```
 --threads               number of threads [8]
+--ploidy                tumour ploidy (mean total copy number); genes are AMP above round(ploidy/2) copies per
+                        haplotype/allele and DEL below it [estimated from the CN profile when absent, with a warning]
+--ploidy-file           read the ploidy from the caller's fit table instead: SAVANA *_fitted_purity_ploidy.tsv or
+                        Wakhan solutions_ranks.tsv (rank-1 row); ignored when --ploidy is given
 --specie                human or mouse or user defined(GFF and rm files need to be provided) [human]
 --genome                Either hg38, chm13 or mm10 [hg38]
 --gff                   If user want to use a alternative gff

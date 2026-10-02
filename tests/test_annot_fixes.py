@@ -128,7 +128,7 @@ class AnnotCNAs(unittest.TestCase):
         genes = {'chr19': [['PARD6G', 'STK11'], [80147232, 1167558], [80257514, 1238431]]}   # PARD6G is really on chr18
         by_gene = {}
         annot.annot_CNAs(genes, cnas, ploidy, by_gene)
-        self.assertEqual(by_gene['PARD6G'].CN, [0, 0])             # untouched default: no copy number assigned
+        self.assertEqual(by_gene['PARD6G'].CN, ['NA', 'NA'])       # untouched default: copy number unknown (printed as NA)
         self.assertEqual(by_gene['STK11'].CN, [1.0, 1.0])          # neutral, outside the 5-6 Mb gain
 
 

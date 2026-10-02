@@ -15,7 +15,7 @@ import os
 import importlib
 import logging
 
-from padfoot.annot import annotate_things
+from padfoot.annot import annotate_things, read_ploidy_file
 from padfoot.preprocess import generate_gff, generate_rm
 #from padfoot_cluster_cns import cluster_cn
 from padfoot.__version__ import __version__
@@ -152,6 +152,12 @@ def main():
                         help="number of parallel threads [8]")
     parser.add_argument("--specie", dest="specie", default="human", help="Specie")
     parser.add_argument("--skip_RepeatMasker", dest="run_repeatmasker", action = "store_false", help="Skip RepeatMasker [True]")
+    parser.add_argument("--ploidy", dest="ploidy", type=float, default=None, metavar="float",
+                        help="tumour ploidy (mean total copy number) used as the copy-number baseline: a haplotype or allele "
+                             "is AMP above round(ploidy/2) and DEL below it [estimated from the CN profile when absent]")
+    parser.add_argument("--ploidy-file", dest="ploidy_file", default=None, metavar="path",
+                        help="TSV with a 'ploidy' column to read the tumour ploidy from: SAVANA *_fitted_purity_ploidy.tsv or "
+                             "Wakhan solutions_ranks.tsv (the rank-1 row is used); ignored when --ploidy is given")
     args = parser.parse_args()
 
     beds = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "beds"))
@@ -160,6 +166,8 @@ def main():
     args.vcf_file = os.path.abspath(args.vcf_file)
     args.cna_vcf = os.path.abspath(args.cna_vcf)
     args.ref = os.path.abspath(args.ref)
+    if args.ploidy_file:
+        args.ploidy_file = os.path.abspath(args.ploidy_file)
 
     os.makedirs(args.out_dir, exist_ok=True)
 
@@ -204,6 +212,24 @@ def main():
         sys.exit(1)
 
     logger.info("Reference FASTA index found: %s.fai", args.ref)
+
+    if args.ploidy is not None:
+        if not args.ploidy > 0:
+            logger.error("--ploidy must be a positive number: %s", args.ploidy)
+            sys.exit(1)
+        logger.info("Tumour ploidy from --ploidy: %.3f", args.ploidy)
+    elif args.ploidy_file:
+        if not os.path.exists(args.ploidy_file):
+            logger.error("Ploidy file does not exist: %s", args.ploidy_file)
+            sys.exit(1)
+        try:
+            args.ploidy = read_ploidy_file(args.ploidy_file)
+        except (ValueError, KeyError, OSError) as exc:
+            logger.error("Cannot read the tumour ploidy from %s: %s", args.ploidy_file, exc)
+            sys.exit(1)
+        logger.info("Tumour ploidy from %s: %.3f", args.ploidy_file, args.ploidy)
+    else:
+        logger.warning("No --ploidy / --ploidy-file given: the tumour ploidy will be estimated from the copy-number profile")
 
     if args.new_gff:
         gff_path = os.path.join(args.out_dir, "gff_file.gff3")

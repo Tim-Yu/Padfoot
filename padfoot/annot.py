@@ -120,7 +120,7 @@ class Gene(object):
         self.pos_1 = pos_1
         self.pos_2 = pos_2
         self.Gene_symbol = Gene_symbol
-        self.CN = [0,0]
+        self.CN = ['NA', 'NA']   # per-haplotype copy number at the gene start; 'NA' = unknown
         self.SV = []
         self.score = [0, 0, 0]
         self.cancer = ''
@@ -140,7 +140,7 @@ class Gene(object):
                 sv_info.append(','.join(svs))
             else:
                 sv_info.append('')
-        return '\t'.join([self.Gene_symbol, pos, str(sum(self.score)), self.cancer, self.CN_impact[0],str(self.CN[0]),self.impact[1], sv_info[1],  self.CN_impact[1],str(self.CN[1]),self.impact[2], sv_info[2], self.impact[0], sv_info[0]])
+        return '\t'.join([self.Gene_symbol, pos, str(sum(self.score)), self.cancer, self.CN_impact[0], fmt_cn(self.CN[0]), self.impact[1], sv_info[1],  self.CN_impact[1], fmt_cn(self.CN[1]), self.impact[2], sv_info[2], self.impact[0], sv_info[0]])
 
 def get_bps(vcf_file):
     svs = defaultdict(list)
@@ -381,14 +381,96 @@ def pad_unlisted_segments(chr_lens, hpls, default_cn=1.0):
             out[chrom] = value
     return out
 
-def get_CNA(cna_vcf, svs):
+def fmt_cn(value):
+    """Copy number for the tables: integral values without a trailing .0, unknown as NA."""
+    if value is None or value == 'NA' or (isinstance(value, float) and np.isnan(value)):
+        return 'NA'
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return str(int(f)) if f.is_integer() else str(value)
+
+def is_unknown(cn):
+    return cn is None or cn == 'NA' or (isinstance(cn, float) and np.isnan(cn))
+
+def round_half_up(x):
+    """Nearest integer, halves rounded up (Python's round() is banker's rounding: round(2.5) == 2)."""
+    return int(np.floor(float(x) + 0.5))
+
+def haplotype_baseline(ploidy):
+    """Expected copy number of one haplotype (Wakhan HP1/HP2) or one allele (SAVANA major/minor) in a copy-neutral
+    region of a tumour with the given ploidy: round(ploidy / 2)."""
+    return max(0, round_half_up(float(ploidy) / 2.0))
+
+def cn_state(cn, baseline):
+    """'AMP' / 'DEL' / 'NEUT' for a copy number against the per-haplotype baseline; '' when the copy number is unknown."""
+    if is_unknown(cn):
+        return ''
+    if cn > baseline:
+        return 'AMP'
+    if cn < baseline:
+        return 'DEL'
+    return 'NEUT'
+
+def read_ploidy_file(path):
+    """Tumour ploidy from a caller's fit table: SAVANA ``*_fitted_purity_ploidy.tsv`` (purity, ploidy, distance, rank) or
+    Wakhan ``solutions_ranks.tsv`` (..., ploidy, confidence, solution_rank). Any TSV with a ``ploidy`` column works; the row
+    with the lowest ``rank`` / ``solution_rank`` is used when such a column exists, otherwise the first row."""
+    df = pd.read_csv(path, sep='\t')
+    df.columns = [str(c).strip() for c in df.columns]
+    if 'ploidy' not in df.columns:
+        raise ValueError(f"{path}: no 'ploidy' column (columns: {', '.join(df.columns)})")
+    df = df.dropna(subset=['ploidy'])
+    if df.empty:
+        raise ValueError(f"{path}: no row with a ploidy value")
+    rank_col = next((c for c in ('rank', 'solution_rank') if c in df.columns), None)
+    row = df.sort_values(rank_col).iloc[0] if rank_col else df.iloc[0]
+    ploidy = float(row['ploidy'])
+    if not np.isfinite(ploidy) or ploidy <= 0:
+        raise ValueError(f"{path}: ploidy is not a positive number: {row['ploidy']!r}")
+    return ploidy
+
+def mean_cn(segments):
+    """Length-weighted mean copy number over (cn, start, end) segments, skipping unknown copy numbers."""
+    num = den = 0.0
+    for cn, start, end in segments:
+        if is_unknown(cn):
+            continue
+        length = max(1, int(end) - int(start) + 1)
+        num += float(cn) * length
+        den += length
+    return num / den if den else float('nan')
+
+def resolve_ploidy(ploidy, estimate, caller):
+    """Return (ploidy, per-haplotype baseline); fall back to the profile-derived estimate with a warning."""
+    if ploidy is None:
+        ploidy = estimate if np.isfinite(estimate) else 2.0
+        logger.warning("No tumour ploidy supplied (--ploidy / --ploidy-file): estimated %.2f from the %s copy-number "
+                       "profile as the length-weighted mean total copy number. Prefer the caller's fitted ploidy.", ploidy, caller)
+    base = haplotype_baseline(ploidy)
+    logger.info("Tumour ploidy %.2f -> per-haplotype baseline %d (copy number > %d = AMP, < %d = DEL, = %d = NEUT)",
+                ploidy, base, base, base, base)
+    return ploidy, base
+
+def round_savana_cn(total_cn, minor_cn):
+    """SAVANA's absolute copy numbers are purity-scaled segment means and therefore fractional. Round them to integers so
+    the AMP/DEL/NEUT call works like Wakhan's integer calls: total first, minor capped at floor(total/2) so that
+    minor <= major, major = total - minor. Returns (major, minor); (None, None) when the total or the minor-allele copy
+    number is missing (segments without het SNPs): the split is unknown and must not be mistaken for a loss."""
+    if is_unknown(total_cn) or is_unknown(minor_cn):
+        return None, None
+    total_int = max(0, round_half_up(total_cn))
+    minor_int = min(max(0, round_half_up(minor_cn)), total_int // 2)
+    return total_int - minor_int, minor_int
+
+def get_CNA(cna_vcf, svs, ploidy=None):
     vcf = pysam.VariantFile(cna_vcf)
     hp1ls = defaultdict(list)
     hp2ls = defaultdict(list)
     LOH  = defaultdict(list)
     THR=1
     CNAs = defaultdict(list)
-    ploidy = []
     cov1 = []
     chrs = vcf.header.contigs.keys()
     chr_lens = [x.length for x in vcf.header.contigs.values() ]
@@ -455,8 +537,6 @@ def get_CNA(cna_vcf, svs):
     hp1ls = pad_unlisted_segments(pad_lens, hp1ls)
     hp2ls = pad_unlisted_segments(pad_lens, hp2ls)
     for hp, hpls in enumerate([hp1ls, hp2ls]):
-        ploidy_hp = 0
-        len_cn = 0
         for ref_id, (cnls, pos1ls, pos2ls) in hpls.items():
             loh = False
             for i, (pos_1, pos_2) in enumerate(zip(pos1ls, pos2ls)):
@@ -470,62 +550,61 @@ def get_CNA(cna_vcf, svs):
                 if ref_id in LOH.keys() and  pos_1 in LOH[ref_id][0]:
                     loh = True
                 CNAs[(ref_id, hp+1)].append(CNA(ref_id, pos_1, pos_2, cn, hp+1, loh, sv1, sv2))
-                len_cn += (pos_2 - pos_1)
-                ploidy_hp += cn * (pos_2 - pos_1)
-        ploidy.append(round(ploidy_hp/len_cn))     
 
+    # Baseline = the tumour ploidy (fitted by the caller, passed in by the user), not a mean of this profile. Both padded
+    # haplotype profiles cover the same bases, so the fallback estimate of the ploidy is mean(HP1) + mean(HP2).
+    estimate = mean_cn([(c, s, e) for cnls, s1, e1 in hp1ls.values() for c, s, e in zip(cnls, s1, e1)]) + \
+               mean_cn([(c, s, e) for cnls, s1, e1 in hp2ls.values() for c, s, e in zip(cnls, s1, e1)])
+    ploidy, base = resolve_ploidy(ploidy, estimate, 'Wakhan')
     check_hp_svs(CNAs)
-    for (ref,hp), cnas in CNAs.items():
-        pl = ploidy[hp-1]
+    for cnas in CNAs.values():
         for cna in cnas:
-            if cna.cn > pl:
-                cna.dir1 = 'AMP'
-            elif cna.cn < pl:
-                cna.dir1 = 'DEL'
+            cna.dir1 = cn_state(cna.cn, base)
     check_cn_altering_svs(svs, cn1_cov)
-    return(CNAs, ploidy)
+    return (CNAs, [base, base])
 
-def get_savana_CNA(cna_tsv, svs):
+def get_savana_CNA(cna_tsv, svs, ploidy=None):
+    """SAVANA ``*_segmented_absolute_copy_number.tsv``: HP1 = major allele (copyNumber - minorAlleleCopyNumber), HP2 =
+    minor allele, both rounded to integers (see round_savana_cn). SAVANA has no haplotype phasing, so 'HP1'/'HP2' are
+    the larger and the smaller allele of each segment; both are compared with the same baseline, round(ploidy / 2)."""
     df = pd.read_csv(cna_tsv, sep='\t')
     hp1ls = defaultdict(list)
     hp2ls = defaultdict(list)
     LOH = defaultdict(list)
     CNAs = defaultdict(list)
-    ploidy = []
+    totals = []
+    n_unknown = 0
     for _, row in df.sort_values(['chromosome', 'start', 'end']).iterrows():
         ref_id = row['chromosome']
         pos_1, pos_2 = int(row['start']), int(row['end'])
-        total_cn = float(row['copyNumber'])
-        minor_cn = max(0.0, min(float(row['minorAlleleCopyNumber']), total_cn))
-        major_cn = max(0.0, total_cn - minor_cn)
-        hp1ls[ref_id].append((major_cn, pos_1, pos_2))
-        hp2ls[ref_id].append((minor_cn, pos_1, pos_2))
-        if minor_cn <= 0.5:
+        total_cn = pd.to_numeric(row['copyNumber'], errors='coerce')
+        minor_cn = pd.to_numeric(row['minorAlleleCopyNumber'], errors='coerce')
+        major_int, minor_int = round_savana_cn(total_cn, minor_cn)
+        if minor_int is None:
+            n_unknown += 1
+        hp1ls[ref_id].append((major_int, pos_1, pos_2))
+        hp2ls[ref_id].append((minor_int, pos_1, pos_2))
+        totals.append((total_cn, pos_1, pos_2))
+        if minor_int == 0:
             LOH[ref_id].append((pos_1, pos_2))
+    if n_unknown:
+        logger.warning("%d SAVANA segment(s) have no minor-allele copy number (no het SNPs): their allele copy numbers "
+                       "are left unknown (NA), not treated as a loss", n_unknown)
 
+    ploidy, base = resolve_ploidy(ploidy, mean_cn(totals), 'SAVANA')
     for hp, hpls in enumerate([hp1ls, hp2ls]):
-        ploidy_hp = 0
-        len_cn = 0
         for ref_id, segments in hpls.items():
             for cn, pos_1, pos_2 in segments:
                 sv1 = find_segment_boundary_sv(svs, ref_id, pos_1, '-')
                 sv2 = find_segment_boundary_sv(svs, ref_id, pos_2, '+')
                 loh = any(loh_start == pos_1 and loh_end == pos_2 for loh_start, loh_end in LOH.get(ref_id, []))
                 CNAs[(ref_id, hp+1)].append(CNA(ref_id, pos_1, pos_2, cn, hp+1, loh, sv1, sv2))
-                seg_len = max(1, pos_2 - pos_1)
-                len_cn += seg_len
-                ploidy_hp += cn * seg_len
-        ploidy.append(round(ploidy_hp/len_cn) if len_cn else 1)
 
     check_hp_svs(CNAs)
-    for (ref,hp), cnas in CNAs.items():
-        pl = ploidy[hp-1]
+    for cnas in CNAs.values():
         for cna in cnas:
-            if cna.cn > pl:
-                cna.dir1 = 'AMP'
-            elif cna.cn < pl:
-                cna.dir1 = 'DEL'
-    return(CNAs, ploidy)
+            cna.dir1 = cn_state(cna.cn, base)
+    return (CNAs, [base, base])
 
 def find_segment_boundary_sv(svs, ref_id, pos, direction):
     boundary = [(ref_id, pos),(ref_id, pos+1),(ref_id, pos-1)]
@@ -535,10 +614,11 @@ def find_segment_boundary_sv(svs, ref_id, pos, direction):
         candidates = [sv for sv in svs if (sv.bp_1 in boundary and sv.direction_1 == '+') or (sv.bp_2 in boundary and sv.direction_2 == '+')]
     return candidates[0] if candidates else ''
 
-def get_CNAs(cna_file, svs, caller='wakhan'):
+def get_CNAs(cna_file, svs, caller='wakhan', ploidy=None):
+    """Returns (CNAs, baselines): baselines = [per-haplotype baseline] * 2, derived from the tumour ploidy."""
     if caller == 'savana':
-        return get_savana_CNA(cna_file, svs)
-    return get_CNA(cna_file, svs)
+        return get_savana_CNA(cna_file, svs, ploidy)
+    return get_CNA(cna_file, svs, ploidy)
 
 def check_cn_altering_svs(svs, cn1_cov):
     for sv in svs:
@@ -711,7 +791,7 @@ def add_gene(by_gene, gene, ref_id, pos1, pos2):
     if not gene in by_gene.keys():
         by_gene[gene] = Gene(ref_id, pos1, pos2, gene)
 
-def annot_CNAs(genes, cnas, ploidy, by_gene):
+def annot_CNAs(genes, cnas, baselines, by_gene):
     hps = [1,2]
     for ref_id, genels in genes.items():
         if not (ref_id,1) in cnas.keys():
@@ -737,16 +817,14 @@ def annot_CNAs(genes, cnas, ploidy, by_gene):
                         logger.warning("Gene %s at %s:%d-%d lies beyond the end of %s; copy number left unset",
                                        gene, ref_id, genels[1][i], genels[2][i], ref_id)
                     continue
+                state = cn_state(cn[ind1-1], baselines[hp-1])
                 if not ind1 - ind2 == 1:
                     cn_prof[ind1-1].genes.append((gene, 'disturbed'))
-                elif cn[ind1-1] > ploidy[hp-1]:
+                elif state in ('AMP', 'DEL'):
                     cn_prof[ind1-1].genes.append(gene)
-                    cn_prof[ind1-1].dir1 = 'AMP'
-                elif cn[ind1-1] < ploidy[hp-1]:
-                    cn_prof[ind1-1].genes.append(gene)
-                    cn_prof[ind1-1].dir1 = 'DEL'
+                    cn_prof[ind1-1].dir1 = state
                 by_gene[gene].CN_impact[hp-1] = cn_prof[ind1-1].dir1
-                by_gene[gene].CN[hp-1] = cn[ind1-1]
+                by_gene[gene].CN[hp-1] = 'NA' if state == '' else cn[ind1-1]
 
 def check_complexSV(cnas, svs):
     svls = defaultdict(list)
@@ -1033,8 +1111,8 @@ def annotate_things(args):
     svs = get_SVs(vcf_file, args.sv_caller)
     cnas = []
     if cna_vcf:
-        cnas, ploidy = get_CNAs(cna_vcf, svs, args.cna_caller)
-        annot_CNAs(genes, cnas, ploidy, by_gene)
+        cnas, baselines = get_CNAs(cna_vcf, svs, args.cna_caller, getattr(args, 'ploidy', None))
+        annot_CNAs(genes, cnas, baselines, by_gene)
     annot_SVS(genes, exon_pos, svs, by_gene)
     if args.specie == 'human':
         cancer_annot(svs, by_gene)
