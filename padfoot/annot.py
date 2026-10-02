@@ -725,6 +725,18 @@ def annot_CNAs(genes, cnas, ploidy, by_gene):
                 ind1 = bisect.bisect_right(cn_start, genels[1][i])
                 ind2 = bisect.bisect_left(cn_end, genels[2][i])
                 add_gene(by_gene, gene, ref_id, genels[1][i], genels[2][i])
+                if by_gene[gene].ref_id != ref_id:
+                    # by_gene is keyed by symbol: a symbol annotated on two contigs (the 18 PAR genes on chrX and chrY)
+                    # keeps the copy number of the contig seen first instead of being overwritten by the second.
+                    continue
+                if genels[1][i] > cn_end[-1]:
+                    # gene start beyond the last segment (i.e. beyond the contig length): the annotation row is
+                    # mislabelled (hg38.gff3.gz lists the last gene of each chromosome under the next chromosome);
+                    # leave its copy number unset rather than assign the trailing segment's.
+                    if hp == 1:
+                        logger.warning("Gene %s at %s:%d-%d lies beyond the end of %s; copy number left unset",
+                                       gene, ref_id, genels[1][i], genels[2][i], ref_id)
+                    continue
                 if not ind1 - ind2 == 1:
                     cn_prof[ind1-1].genes.append((gene, 'disturbed'))
                 elif cn[ind1-1] > ploidy[hp-1]:

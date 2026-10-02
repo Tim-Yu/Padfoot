@@ -102,6 +102,36 @@ class GetCNA(unittest.TestCase):
                           (6000001, 198295559, 1.0)])
 
 
+class AnnotCNAs(unittest.TestCase):
+    def cnas_for(self, records, contigs):
+        header = WAKHAN_HEADER.replace('##contig=<ID=chr3,length=198295559>\n',
+                                       ''.join(f'##contig=<ID={c},length={l}>\n' for c, l in contigs))
+        with tempfile.TemporaryDirectory() as d:
+            vcf = os.path.join(d, 'w.vcf')
+            with open(vcf, 'w') as fh:
+                fh.write(header)
+                for r in records:
+                    fh.write(wakhan_record(*r))
+            return annot.get_CNA(vcf, [])
+
+    def test_par_gene_keeps_the_chrx_copy_number(self):
+        cnas, ploidy = self.cnas_for([('chrX', 1000001, 2000000, 2.0, 1.0), ('chrY', 1, 57227415, 0.0, 0.0)],
+                                     [('chrX', 156040895), ('chrY', 57227415)])
+        genes = {'chrX': [['SHOX'], [614344], [669411]], 'chrY': [['SHOX'], [614344], [669411]]}
+        by_gene = {}
+        annot.annot_CNAs(genes, cnas, ploidy, by_gene)
+        self.assertEqual(by_gene['SHOX'].ref_id, 'chrX')
+        self.assertEqual(by_gene['SHOX'].CN, [1.0, 1.0])          # neutral on chrX, not the chrY 0/0
+
+    def test_gene_beyond_the_contig_end_is_left_unset(self):
+        cnas, ploidy = self.cnas_for([('chr19', 5000001, 6000000, 2.0, 1.0)], [('chr19', 58617616)])
+        genes = {'chr19': [['PARD6G', 'STK11'], [80147232, 1167558], [80257514, 1238431]]}   # PARD6G is really on chr18
+        by_gene = {}
+        annot.annot_CNAs(genes, cnas, ploidy, by_gene)
+        self.assertEqual(by_gene['PARD6G'].CN, [0, 0])             # untouched default: no copy number assigned
+        self.assertEqual(by_gene['STK11'].CN, [1.0, 1.0])          # neutral, outside the 5-6 Mb gain
+
+
 class SV:  # minimal stand-in for annot.SV
     def __init__(self):
         self.repeat = []
