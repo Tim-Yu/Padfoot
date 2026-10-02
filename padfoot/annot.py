@@ -345,6 +345,42 @@ def fill_missing_segments_cn1(
         hp1ls_filled[chrom] = [out_cn, out_s, out_e]
     return hp1ls_filled
 
+def pad_unlisted_segments(chr_lens, hpls, default_cn=1.0):
+    """Return a copy of ``hpls`` ({chrom: [cn_list, start_list, end_list]}, 1-based inclusive) in which every
+    chromosome of ``chr_lens`` is covered end to end: bases before the first listed segment, between non-adjacent
+    segments and after the last one get a ``default_cn`` segment, and chromosomes without any listed segment get a
+    single ``default_cn`` segment. Listed segments are kept exactly as they are (never merged, even when adjacent).
+    Contigs absent from ``chr_lens`` are passed through unchanged."""
+    out = {}
+    for chrom, length in chr_lens.items():
+        length = int(length)
+        if chrom not in hpls or len(hpls[chrom]) != 3 or not hpls[chrom][0]:
+            out[chrom] = [[default_cn], [1], [length]]
+            continue
+        cns, starts, ends = hpls[chrom]
+        order = sorted(range(len(cns)), key=lambda i: (int(starts[i]), int(ends[i])))
+        new_cn, new_s, new_e = [], [], []
+        cur = 1
+        for i in order:
+            s, e = int(starts[i]), int(ends[i])
+            if s > cur:
+                new_cn.append(default_cn)
+                new_s.append(cur)
+                new_e.append(s - 1)
+            new_cn.append(cns[i])
+            new_s.append(s)
+            new_e.append(e)
+            cur = max(cur, e + 1)
+        if cur <= length:
+            new_cn.append(default_cn)
+            new_s.append(cur)
+            new_e.append(length)
+        out[chrom] = [new_cn, new_s, new_e]
+    for chrom, value in hpls.items():
+        if chrom not in out:
+            out[chrom] = value
+    return out
+
 def get_CNA(cna_vcf, svs):
     vcf = pysam.VariantFile(cna_vcf)
     hp1ls = defaultdict(list)
@@ -357,7 +393,8 @@ def get_CNA(cna_vcf, svs):
     chrs = vcf.header.contigs.keys()
     chr_lens = [x.length for x in vcf.header.contigs.values() ]
     chr_lens = dict(zip(chrs, chr_lens))
-    for var in vcf:
+    # Segment building below assumes position-sorted records; sort explicitly rather than rely on the writer.
+    for var in sorted(vcf, key=lambda v: (v.chrom, v.pos, v.stop)):
         ref_id, pos_1, pos_2 = var.chrom, var.pos, var.stop
         hp1, hp2 = var.samples['Sample']['CN1'], var.samples['Sample']['CN2']
         if hp1:
@@ -365,26 +402,38 @@ def get_CNA(cna_vcf, svs):
         if ref_id in hp1ls:
             if not hp1ls[ref_id][0][-1] == hp1:
                 if abs(hp1ls[ref_id][2][-1] - pos_1) > THR:
-                    hp1ls[ref_id][0].append(1)
+                    hp1ls[ref_id][0].append(1.0)
                     hp1ls[ref_id][1].append(hp1ls[ref_id][2][-1]+1)
                     hp1ls[ref_id][2].append(pos_1-1)
                 pos_1 = pos_1 if pos_1 > hp1ls[ref_id][2][-1] else pos_1 + 1
                 hp1ls[ref_id][0].append(hp1)
                 hp1ls[ref_id][1].append(pos_1)
                 hp1ls[ref_id][2].append(pos_2)
+            elif pos_1 <= hp1ls[ref_id][2][-1] + THR + 1:
+                # same copy number and adjacent (or overlapping): extend the open segment
+                hp1ls[ref_id][2][-1] = max(pos_2, hp1ls[ref_id][2][-1])
             else:
-                hp1ls[ref_id][2][-1] = pos_2
+                # same copy number but separated by unlisted (neutral) bases: a new segment, the gap is padded later
+                hp1ls[ref_id][0].append(hp1)
+                hp1ls[ref_id][1].append(pos_1)
+                hp1ls[ref_id][2].append(pos_2)
             if not hp2ls[ref_id][0][-1] == hp2:
                 if abs(hp2ls[ref_id][2][-1] - pos_1) > THR:
-                    hp2ls[ref_id][0].append(1)
+                    hp2ls[ref_id][0].append(1.0)
                     hp2ls[ref_id][1].append(hp2ls[ref_id][2][-1]+1)
                     hp2ls[ref_id][2].append(pos_1-1)
                 pos_1 = pos_1 if pos_1 > hp2ls[ref_id][2][-1] else pos_1 + 1
                 hp2ls[ref_id][0].append(hp2)
                 hp2ls[ref_id][1].append(pos_1)
                 hp2ls[ref_id][2].append(pos_2)
+            elif pos_1 <= hp2ls[ref_id][2][-1] + THR + 1:
+                # same copy number and adjacent (or overlapping): extend the open segment
+                hp2ls[ref_id][2][-1] = max(pos_2, hp2ls[ref_id][2][-1])
             else:
-                hp2ls[ref_id][2][-1] = pos_2
+                # same copy number but separated by unlisted (neutral) bases: a new segment, the gap is padded later
+                hp2ls[ref_id][0].append(hp2)
+                hp2ls[ref_id][1].append(pos_1)
+                hp2ls[ref_id][2].append(pos_2)
         else:
             hp1ls[ref_id]= [[hp1],[pos_1],[pos_2]]
             hp2ls[ref_id] = [[hp2],[pos_1], [pos_2]]
@@ -396,8 +445,15 @@ def get_CNA(cna_vcf, svs):
                 LOH[ref_id]= [[pos_1],[pos_2]]
 
     cn1_cov = int(np.median(cov1)) *0.75
-    #hp1ls = fill_missing_segments_cn1(chr_lens, hp1ls)
-    #hp2ls = fill_missing_segments_cn1(chr_lens, hp2ls)
+    # Wakhan's integer VCF lists altered segments only. Pad every primary chromosome (and any contig that has a
+    # listed segment) with neutral one-copy-per-haplotype segments. Without this, annot_CNAs() looks genes up by
+    # bisect in a list that does not cover them: a gene before the first listed segment lands on index -1 (the
+    # chromosome's LAST segment), a gene after the last one on that last segment, and chromosomes without any
+    # listed segment are skipped altogether.
+    primary = re.compile(r'^(chr)?([0-9]{1,2}|X|Y)$')
+    pad_lens = {c: L for c, L in chr_lens.items() if L and (c in hp1ls or primary.match(c))}
+    hp1ls = pad_unlisted_segments(pad_lens, hp1ls)
+    hp2ls = pad_unlisted_segments(pad_lens, hp2ls)
     for hp, hpls in enumerate([hp1ls, hp2ls]):
         ploidy_hp = 0
         len_cn = 0
@@ -727,31 +783,32 @@ def get_repeat(svls):
     else:
         logger.warning("RepeatMasker output file not found: temp_ins.fa.out")
         return ''
-    reps = defaultdict(int)
-    svrep = defaultdict(list)
-    sv_id = ''
+    # RepeatMasker does not group the .out lines by query (a query's hits can appear in several blocks), and the
+    # old streaming parser summarised a query every time its id changed and never after the last line. Accumulate
+    # per query over the whole file instead, then summarise each query once.
+    masked = defaultdict(lambda: defaultdict(int))   # query id -> repeat family -> masked bases
+    length = {}                                        # query id -> inserted-sequence length
     ll = 0
     for line in rep_file:
-        ll+=1
+        ll += 1
         if ll < 4:
             continue
         l = line.split()
-        if not sv_id:
-            sv_id = l[4]
-        if sv_id == l[4]:
-            reps[l[10]]+= int(l[6]) - int(l[5])
-            sv_len = int(l[7][1:-1]) + int(l[6])
-        else:
-            max_rep = max(reps, key=reps.get)
-            replen = reps[max_rep]
-            if replen > sv_len * 0.8:
-                svrep[sv_id] = (max_rep, replen)
-            reps = defaultdict(int)
-            sv_id = l[4]
-            reps[l[10]]+= int(l[6]) - int(l[5])
-            sv_len = int(l[7][1:-1]) + int(l[6])
-    for key,val in svrep.items():
-        svls[key].repeat.append(val)
+        if len(l) < 11:
+            # blank line, or RepeatMasker's "There were no repetitive sequences detected" notice
+            continue
+        masked[l[4]][l[10]] += int(l[6]) - int(l[5])
+        length[l[4]] = int(l[7][1:-1]) + int(l[6])
+    rep_file.close()
+    for sv_id, reps in masked.items():
+        # Keep the dominant repeat family when it masks more than 80% of the inserted sequence.
+        max_rep = max(reps, key=reps.get)
+        replen = reps[max_rep]
+        if replen > length[sv_id] * 0.8:
+            if sv_id in svls:
+                svls[sv_id].repeat.append((max_rep, replen))
+            else:
+                logger.warning("RepeatMasker hit for an insertion id not in the SV set: %s", sv_id)
 
 def check_homology(seq, sv):
     seq1, seq2 = seq
