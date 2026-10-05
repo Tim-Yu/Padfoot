@@ -11,7 +11,6 @@ from collections import defaultdict, Counter
 from typing import Dict, List
 import bisect
 import subprocess
-import gzip
 from Bio import Align
 import os
 import copy
@@ -19,6 +18,8 @@ import re
 import numpy as np
 import pandas as pd
 import logging
+
+from padfoot.preprocess import open_text
 
 logger = logging.getLogger()
 
@@ -655,7 +656,7 @@ def get_genes(gff_file):
     THR = GENE_PAD
     genes = defaultdict(list)
     exon_pos = defaultdict(list)
-    fopen =gzip.open(gff_file, 'rt')
+    fopen = open_text(gff_file)
     for line in fopen:
         ref_id, gene_name, strand, typ, start, end = line.split()
         start = int(start)

@@ -173,6 +173,12 @@ def main():
         args.ploidy_file = os.path.abspath(args.ploidy_file)
     if args.cancer_genes:
         args.cancer_genes = os.path.abspath(args.cancer_genes)
+    # --gff / --rm are read after the chdir into <out>/temp below, so a relative path (what a Nextflow task passes) must be
+    # resolved here like the other inputs
+    if args.new_gff:
+        args.new_gff = os.path.abspath(args.new_gff)
+    if args.rm_file:
+        args.rm_file = os.path.abspath(args.rm_file)
 
     os.makedirs(args.out_dir, exist_ok=True)
 
@@ -241,12 +247,19 @@ def main():
         logger.warning("No --ploidy / --ploidy-file given: the tumour ploidy will be estimated from the copy-number profile")
 
     if args.new_gff:
-        gff_path = os.path.join(args.out_dir, "gff_file.gff3")
+        if not os.path.exists(args.new_gff):
+            logger.error("GFF file does not exist: %s", args.new_gff)
+            sys.exit(1)
+        # gzip-compressed like the bundled beds/<genome>.gff3.gz
+        gff_path = os.path.join(args.out_dir, "gff_file.gff3.gz")
         logger.info("Using custom GFF input: %s", args.new_gff)
         logger.debug("Generating normalized GFF file: %s", gff_path)
-        generate_gff(args.new_gff, gff_path)
+        n_genes = generate_gff(args.new_gff, gff_path)
+        if not n_genes:
+            logger.warning("No protein-coding gene found in %s (generate_gff expects GENCODE-style GFF3 attributes "
+                           "gene_type=protein_coding, gene_name, transcript_name, exon_number)", args.new_gff)
         args.gff_file = gff_path
-        logger.info("Prepared GFF annotations: %s", args.gff_file)
+        logger.info("Prepared GFF annotations: %s (%d protein-coding genes)", args.gff_file, n_genes)
     else:
         if not args.genome:
             logger.error("Please provide --gff or select --genome [hg38, mm10, chm13]")
@@ -255,12 +268,21 @@ def main():
         logger.info("Using bundled GFF annotations: %s", args.gff_file)
 
     if args.rm_file:
+        if not os.path.exists(args.rm_file):
+            logger.error("RepeatMasker file does not exist: %s", args.rm_file)
+            sys.exit(1)
         rm_path = os.path.join(args.out_dir, "rm.bed")
         logger.info("Using custom RepeatMasker input: %s", args.rm_file)
         logger.debug("Generating normalized RepeatMasker BED: %s", rm_path)
-        generate_rm(args.rm_file, rm_path)
+        try:
+            n_repeats = generate_rm(args.rm_file, rm_path)
+        except ValueError as exc:
+            logger.error("Cannot read the RepeatMasker annotations: %s", exc)
+            sys.exit(1)
+        if not n_repeats:
+            logger.warning("No repeat found in %s", args.rm_file)
         args.rm_file = rm_path
-        logger.info("Prepared RepeatMasker annotations: %s", args.rm_file)
+        logger.info("Prepared RepeatMasker annotations: %s (%d repeats)", args.rm_file, n_repeats)
     else:
         if not args.genome:
             logger.error("Please provide --rm or select --genome [hg38, mm10, chm13]")

@@ -82,8 +82,10 @@ padfoot --sv-vcf sample.classified.somatic.vcf --sv-caller savana --cna-file sam
                         Wakhan solutions_ranks.tsv (rank-1 row); ignored when --ploidy is given
 --specie                human or mouse or user defined(GFF and rm files need to be provided) [human]
 --genome                Either hg38, chm13 or mm10 [hg38]
---gff                   If user want to use a alternative gff
---rm                    Repeat masker file (.fa.out)
+--gff                   custom GENCODE-style GFF3, plain or .gz (protein_coding genes with gene_name, transcript_name
+                        and exon_number attributes) instead of the bundled one, e.g. for chm13
+--rm                    custom repeat annotation, plain or .gz: RepeatMasker .out / .fa.out, or a 4-column BED
+                        (chr, start, end, class/family)
 ```
 
 ### Genome Annotations
@@ -92,8 +94,8 @@ We provide default **GFF** and **RepeatMasker** annotation files in the `bed/` d
 
 If you would like to use a different genome assembly or custom annotations, you can specify your own files using the following parameters:
 
-- `--gff`: Path to a custom GFF annotation file  
-- `--rm`: Path to a custom RepeatMasker BED file  
+- `--gff`: Path to a custom GENCODE-style GFF3 annotation file (plain or gzipped)  
+- `--rm`: Path to a custom RepeatMasker `.out` file or a 4-column BED (`chr start end class/family`), plain or gzipped  
 - `--specie`: Specify the species or genome build (e.g., `hg38`, `chm13`)
 
 These options allow flexibility for applying **Padfoot** to a variety of genome references and annotation sources.
