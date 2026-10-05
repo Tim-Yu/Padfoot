@@ -1199,6 +1199,9 @@ def annotate_things(args):
     annot_SVS(genes, exon_pos, svs, by_gene)
     if args.specie == 'human':
         cancer_annot(svs, by_gene, getattr(args, 'cancer_genes', None))
+    else:
+        logger.warning("Cancer gene annotation skipped: the cancer gene table is human and is applied only with "
+                       "--specie human (current value: %s)", args.specie)
     annot_ins(svs, ref,t, args.rm_file, args.specie, args.run_repeatmasker)
     get_microhomology(svs, ref)
     output_svs(svs, out_dir)

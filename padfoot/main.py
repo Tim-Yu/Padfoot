@@ -150,7 +150,9 @@ def main():
                         help="Repeat masker annotation file")
     parser.add_argument("-t", "--threads", dest="threads", default=8, type=int, metavar="int",
                         help="number of parallel threads [8]")
-    parser.add_argument("--specie", dest="specie", default="human", help="Specie")
+    parser.add_argument("--specie", dest="specie", default="human",
+                        help="species: the RepeatMasker -species term (e.g. human, mus_musculus); the cancer gene "
+                             "annotation runs only with 'human' [human]")
     parser.add_argument("--skip_RepeatMasker", dest="run_repeatmasker", action = "store_false", help="Skip RepeatMasker [True]")
     parser.add_argument("--ploidy", dest="ploidy", type=float, default=None, metavar="float",
                         help="tumour ploidy (mean total copy number) used as the copy-number baseline: a haplotype or allele "
@@ -294,8 +296,10 @@ def main():
         logger.error("Please provide --specie for repeat annotation")
         sys.exit(1)
 
-    if args.genome == "mm10" and args.specie != "mouse":
-        logger.warning("Genome preset mm10 usually implies species 'mouse'; current value: %s", args.specie)
+    if args.genome == "mm10" and args.specie.replace(" ", "_").lower() != "mus_musculus":
+        # RepeatMasker rejects -species mouse ("Ambiguous search term 'mouse'")
+        logger.warning("Genome preset mm10 usually implies --specie mus_musculus (RepeatMasker rejects 'mouse' as "
+                       "ambiguous); current value: %s", args.specie)
 
     logger.info("Annotation inputs resolved successfully")
     logger.info("GFF file: %s", args.gff_file)

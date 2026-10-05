@@ -80,7 +80,9 @@ padfoot --sv-vcf sample.classified.somatic.vcf --sv-caller savana --cna-file sam
                         haplotype/allele and DEL below it [estimated from the CN profile when absent, with a warning]
 --ploidy-file           read the ploidy from the caller's fit table instead: SAVANA *_fitted_purity_ploidy.tsv or
                         Wakhan solutions_ranks.tsv (rank-1 row); ignored when --ploidy is given
---specie                human or mouse or user defined(GFF and rm files need to be provided) [human]
+--specie                RepeatMasker species term: human, mus_musculus (not 'mouse', which RepeatMasker rejects
+                        as ambiguous) or another species (with --gff and --rm); the cancer gene annotation runs only
+                        with human [human]
 --genome                Either hg38, chm13 or mm10 [hg38]
 --gff                   custom GENCODE-style GFF3, plain or .gz (protein_coding genes with gene_name, transcript_name
                         and exon_number attributes) instead of the bundled one, e.g. for chm13
