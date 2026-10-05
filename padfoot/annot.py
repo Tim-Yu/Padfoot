@@ -82,7 +82,7 @@ class SV(object):
         typ = self.genes[2] if len(self.genes)==3 else ' '
         microh = self.microh[0] if self.microh else ' '
         tel = str(self.telomere) if self.telomere else ' '
-        ins_al = ';'.join(set(self.ins_align)) if self.ins_align else ' '
+        ins_al = ';'.join(sorted(set(self.ins_align))) if self.ins_align else ' '   # sorted: set order follows the hash seed
         rep = ','.join([':'.join([s[0], str(s[1])]) for s in self.repeat])
 
         st = self.direction_1 + self.direction_2
