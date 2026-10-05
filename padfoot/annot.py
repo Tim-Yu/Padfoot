@@ -11,6 +11,7 @@ from collections import defaultdict, Counter
 from typing import Dict, List
 import bisect
 import subprocess
+import shlex
 from Bio import Align
 import os
 import copy
@@ -917,8 +918,9 @@ def write_ins(svs, ref, t, specie, run_repeatmasker):
     if not wrote_sequence:
         return False
     if run_repeatmasker:
-        run_command(f"RepeatMasker -species {specie} temp_ins.fa")
-    run_command(f"minimap2 -ax map-ont {ref} temp_ins.fa -k 17 -y -K 5G -t {t} --eqx | samtools sort -@ {t} -m 4G > temp_ins.bam")
+        run_command(f"RepeatMasker -species {shlex.quote(specie)} temp_ins.fa")
+    t = shlex.quote(str(t))
+    run_command(f"minimap2 -ax map-ont {shlex.quote(ref)} temp_ins.fa -k 17 -y -K 5G -t {t} --eqx | samtools sort -@ {t} -m 4G > temp_ins.bam")
     run_command(f"samtools index -@ {t} temp_ins.bam")
     return True
     
@@ -989,8 +991,10 @@ def get_microhomology(svs, ref):
         if sv.sv_type == 'INS':
             continue
         bpls.append(sv)
-        run_command(f'samtools faidx {ref} \'{sv.bp_1[0]}:{max(0, sv.bp_1[1]-THR)}-{sv.bp_1[1]+THR}\' >> temp_bpseq.tsv')
-        run_command(f'samtools faidx {ref} \'{sv.bp_2[0]}:{max(0, sv.bp_2[1]-THR)}-{sv.bp_2[1]+THR}\' >> temp_bpseq.tsv')
+        region1 = f'{sv.bp_1[0]}:{max(0, sv.bp_1[1]-THR)}-{sv.bp_1[1]+THR}'
+        region2 = f'{sv.bp_2[0]}:{max(0, sv.bp_2[1]-THR)}-{sv.bp_2[1]+THR}'
+        run_command(f'samtools faidx {shlex.quote(ref)} {shlex.quote(region1)} >> temp_bpseq.tsv')
+        run_command(f'samtools faidx {shlex.quote(ref)} {shlex.quote(region2)} >> temp_bpseq.tsv')
     
     f.close()
   
@@ -1039,7 +1043,7 @@ def annot_bp_repeat(svls, rm_bed):
             f.write('\t' .join([sv.bp_2[0], str(max(0, sv.bp_2[1]-5)), str(sv.bp_2[1]+5), sv.vcf_id, 'BP2']))
             f.write('\n')
             
-    run_command(f'bedtools intersect -a temp_bps.bed -b {rm_bed} -wb > temp_int.bed')
+    run_command(f'bedtools intersect -a temp_bps.bed -b {shlex.quote(rm_bed)} -wb > temp_int.bed')
     
     f1 = open('temp_int.bed')
     for line in f1:
