@@ -56,14 +56,16 @@ class RealBreakpoints(unittest.TestCase):
         annot.annotBPs(sv, (chrom, pos), self.genes, self.exon_pos, by_gene, 1)
         return sv.genes[0]
 
-    def test_savana_id_74048_is_sppl2b_intron3_on_both_breakends(self):
+    def test_savana_id_74048_is_sppl2b_intron13_on_both_breakends(self):
         # was blank with the 25fd6d4 annotation: bisect_left on the unsorted end list landed on ENSG00000273734
-        self.assertEqual(self._annotate('chr19', 2347430)[:2], ('SPPL2B', 'intron3'))
-        self.assertEqual(self._annotate('chr19', 2347837)[:2], ('SPPL2B', 'intron3'))
+        # intron 13 (the label used to keep only the last digit of the exon number)
+        self.assertEqual(self._annotate('chr19', 2347430)[:2], ('SPPL2B', 'intron13'))
+        self.assertEqual(self._annotate('chr19', 2347837)[:2], ('SPPL2B', 'intron13'))
 
-    def test_severus_bnd6167_is_znf595_promoter(self):
+    def test_severus_bnd6167_is_downstream_of_znf595(self):
         # upstream of chr4's first gene; blank while LMLN sat at the front of the chr4 list
-        self.assertEqual(self._annotate('chr4', 89170)[:2], ('ZNF595', 'promoter/utr'))
+        # ZNF595 is + strand and ends at 88,208: 89,170 is in its 3' flank
+        self.assertEqual(self._annotate('chr4', 89170)[:2], ('ZNF595', 'downstream'))
 
     def test_relabelled_last_genes_are_found_on_their_own_chromosome(self):
         # the last gene of each chromosome used to be labelled with the next chromosome; probe each gene's midpoint
@@ -82,8 +84,9 @@ class RealBreakpoints(unittest.TestCase):
         # 10 kb flank); the exon wins. 1,100,500 lies in no gene body, so the innermost flank (SBNO2) is reported.
         self.assertEqual(self._annotate('chr19', 1223000)[:2], ('STK11', 'exon10'))
         self.assertEqual(self._annotate('chr19', 1215001)[:2], ('STK11', 'intron3'))
-        self.assertEqual(self._annotate('chr19', 1100500)[:2], ('SBNO2', 'promoter/utr'))
-        self.assertEqual(self._annotate('chr19', 900000)[:2], ('R3HDM4', 'intron6'))
+        self.assertEqual(self._annotate('chr19', 1100500)[:2], ('SBNO2', 'downstream'))
+        # R3HDM4 is - strand: 900,000 lies between exon6 and exon5, i.e. intron 5 in transcript order
+        self.assertEqual(self._annotate('chr19', 900000)[:2], ('R3HDM4', 'intron5'))
 
     def test_position_outside_every_gene_is_blank(self):
         self.assertEqual(self._annotate('chr19', 20000), ())

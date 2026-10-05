@@ -671,7 +671,8 @@ def get_genes(gff_file):
                 genes[ref_id][0].append(gene_name)
                 genes[ref_id][1].append(start-THR)
                 genes[ref_id][2].append(end+THR)
-        elif typ.startswith(gene_name) or 'codon' in typ or 'UTR' in typ:
+        elif not re.fullmatch(r'exon\d+', typ):
+            # transcript rows (<gene>-NNN, or ENST... for unnamed ENSG genes), codons and UTRs are not exons
             continue
         else:
             if gene_name in exon_pos.keys():
@@ -748,6 +749,24 @@ def find_gene_at(genels, pos):
         idx -= 1
     return best_pad
 
+def exon_label(exons, pos, strand):
+    """Where ``pos`` falls relative to a gene's exons (exons = [starts, ends, names, [strand]], sorted by start):
+    'exonK' inside exon K; 'intronK' between exon K and exon K+1 in transcript order (the lower number of the two
+    flanking exons, so the label is right on both strands and for K >= 10); in the padded flank before the first
+    exon of the transcript 'promoter/utr', after its last exon 'downstream'. Distinct labels for the two flanks
+    keep an SV spanning the whole gene a 'between_exons' event in annot_SVS()."""
+    starts, ends, names = exons[0], exons[1], exons[2]
+    n = len(starts)
+    after = bisect.bisect_right(starts, pos)     # exons starting at or before pos
+    ended = bisect.bisect_left(ends, pos)        # exons ending before pos
+    if after == 0 or ended == n:
+        five_prime = (after == 0) == (strand != '-')
+        return 'promoter/utr' if five_prime else 'downstream'
+    if after == ended:
+        nums = [int(m.group(1)) for m in (re.fullmatch(r'exon(\d+)', x) for x in (names[after - 1], names[after])) if m]
+        return 'intron' + str(min(nums)) if nums else 'intron'
+    return names[after - 1]
+
 def annotBPs(sv, bp_1, genes, exon_pos, by_gene, bp):
     if not bp_1[0] in list(genes.keys()) and not 'chr' + bp_1[0] in list(genes.keys()):
         sv.genes.append(())
@@ -760,17 +779,12 @@ def annotBPs(sv, bp_1, genes, exon_pos, by_gene, bp):
         # is not wherever genes overlap, so the answer depended on the search path (and on the file order of the genes).
         ind2 = find_gene_at(genels, bp_1[1])
         if ind2 is not None:
-            if genels[0][ind2] in list(exon_pos.keys()):
+            ty, strand = 'promoter/utr', '.'
+            if genels[0][ind2] in exon_pos:
                 exons = exon_pos[genels[0][ind2]]
-                ind1a = bisect.bisect_right(exons[0], bp_1[1])
-                ind1b = bisect.bisect_left(exons[1], bp_1[1])
-                if ind1a == 0 or ind1b == len(exons):
-                    ty = 'promoter/utr'
-                elif ind1a == ind1b:
-                    ty = 'intron' + exons[2][ind1a - 1][-1]
-                else:
-                    ty = exons[2][ind1a - 1]
-            sv.genes.append((genels[0][ind2], ty, exons[3][0]))
+                strand = exons[3][0]
+                ty = exon_label(exons, bp_1[1], strand)
+            sv.genes.append((genels[0][ind2], ty, strand))
             add_gene(by_gene, genels[0][ind2], bp_1[0], genels[1][ind2], genels[2][ind2])
             by_gene[genels[0][ind2]].SV.append((sv, bp))
         else:
@@ -792,7 +806,7 @@ def annot_SVS(genes, exon_pos, svs, by_gene):
         if sv.genes[0] == sv.genes[1]:
             if 'exon'  in sv.genes[0][1]:
                 svlen = sv.bp_2[1] - sv.bp_1[1]
-                if svlen // 3:
+                if svlen % 3:
                     sv.genes.append('frameshift')
                     sv.score += 3
                     sv.impact = 'HIGH'
@@ -1063,11 +1077,11 @@ def cancer_annot_svs(svs, cancer_genes, fusion):
         if not sv.genes[2]:
             continue
         if sv.genes[2] == 'possible_fusion':
-            if sv.genes[0][0] in fusion.keys():
-                if sv.genes[1][0] in fusion[sv.genes[1][0]]:
-                    sv.score += 3
-                    sv.impact = 'HIGH_ONCO'
-                    sv.genes[2] == 'oncogenic_fusion'
+            g1, g2 = sv.genes[0][0], sv.genes[1][0]
+            if g2 in fusion.get(g1, ()) or g1 in fusion.get(g2, ()):
+                sv.score += 3
+                sv.impact = 'HIGH_ONCO'
+                sv.genes[2] = 'oncogenic_fusion'
         else:
             if sv.genes[0] and sv.genes[0][0] in cancer_genes.keys():
                 sv.cancer[0] = cancer_genes[sv.genes[0][0]]
