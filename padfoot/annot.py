@@ -649,8 +649,10 @@ def check_hp_svs(cnas):
             else:
                 cn.sv2 = new_sv
     
+GENE_PAD = 10000   # bp added on both sides of every gene in get_genes(); hits inside the pad are 'promoter/utr'
+
 def get_genes(gff_file):
-    THR = 10000
+    THR = GENE_PAD
     genes = defaultdict(list)
     exon_pos = defaultdict(list)
     fopen =gzip.open(gff_file, 'rt')
@@ -706,7 +708,45 @@ def get_genes(gff_file):
         exons[2] = [x for _, x in sorted(zip(exons[0], exons[2]))]
         exons[1] = [x for _, x in sorted(zip(exons[0], exons[1]))]
         exons[0] = sorted(exons[0])
+    for ref_id, genels in genes.items():
+        genes[ref_id] = sort_gene_lists(genels)
     return (genes, exon_pos)
+
+def sort_gene_lists(genels):
+    """[names, padded starts, padded ends] -> the same lists ordered by padded start (ties by end, then name), plus a fourth
+    list with the running maximum of the padded ends. The lookup in annotBPs() bisects the start list, so it must be
+    sorted; the file order is not (the strand-dependent promoter padding reorders neighbours, and the bundled files used to
+    carry each chromosome's last gene at the front of the next chromosome)."""
+    names, starts, ends = genels[0], genels[1], genels[2]
+    order = sorted(range(len(names)), key=lambda i: (starts[i], ends[i], names[i]))
+    names = [names[i] for i in order]
+    starts = [starts[i] for i in order]
+    ends = [ends[i] for i in order]
+    max_end, running = [], float('-inf')
+    for e in ends:
+        running = max(running, e)
+        max_end.append(running)
+    return [names, starts, ends, max_end]
+
+def find_gene_at(genels, pos):
+    """Index of the gene to annotate a breakpoint at ``pos`` with, or None. Candidates are the genes whose padded span
+    (gene +/- GENE_PAD) contains ``pos``; a gene whose body (the unpadded gene) contains it beats genes that only reach it
+    with their flank, and among equals the one with the largest start (the innermost of nested genes) wins. The walk back
+    from the bisect position stops as soon as no gene further left can reach ``pos`` (running maximum of the ends)."""
+    names, starts, ends = genels[0], genels[1], genels[2]
+    max_end = genels[3] if len(genels) > 3 else None
+    idx = bisect.bisect_right(starts, pos) - 1
+    best_pad = None
+    while idx >= 0:
+        if max_end is not None and max_end[idx] < pos:
+            break
+        if ends[idx] >= pos:
+            if starts[idx] + GENE_PAD <= pos <= ends[idx] - GENE_PAD:
+                return idx                      # inside the gene body: the innermost such gene
+            if best_pad is None:
+                best_pad = idx                  # flank hit; keep looking for a gene body further left
+        idx -= 1
+    return best_pad
 
 def annotBPs(sv, bp_1, genes, exon_pos, by_gene, bp):
     if not bp_1[0] in list(genes.keys()) and not 'chr' + bp_1[0] in list(genes.keys()):
@@ -716,9 +756,10 @@ def annotBPs(sv, bp_1, genes, exon_pos, by_gene, bp):
             genels = genes[bp_1[0]]
         else:
             genels = genes['chr' + bp_1[0]]
-        ind1 = bisect.bisect_right(genels[1], bp_1[1])
-        ind2 = bisect.bisect_left(genels[2], bp_1[1])
-        if ind1 == ind2+1:
+        # The old test `bisect_right(starts) == bisect_left(ends) + 1` assumed both padded lists are sorted; the end list
+        # is not wherever genes overlap, so the answer depended on the search path (and on the file order of the genes).
+        ind2 = find_gene_at(genels, bp_1[1])
+        if ind2 is not None:
             if genels[0][ind2] in list(exon_pos.keys()):
                 exons = exon_pos[genels[0][ind2]]
                 ind1a = bisect.bisect_right(exons[0], bp_1[1])
