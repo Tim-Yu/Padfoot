@@ -1050,7 +1050,7 @@ def annot_bp_repeat(svls, rm_bed):
         if not sv.sv_type == 'INS':
             f.write('\t' .join([sv.bp_2[0], str(max(0, sv.bp_2[1]-5)), str(sv.bp_2[1]+5), sv.vcf_id, 'BP2']))
             f.write('\n')
-            
+    f.close()   # flush: bedtools read an empty or truncated temp_bps.bed while it was still open
     run_command(f'bedtools intersect -a temp_bps.bed -b {shlex.quote(rm_bed)} -wb > temp_int.bed')
     
     f1 = open('temp_int.bed')

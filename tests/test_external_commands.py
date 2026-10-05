@@ -11,6 +11,7 @@ printf '%s\n' "$line" >> "$PADFOOT_ARGV_LOG"   # one write: minimap2 and samtool
 case "$(basename "$0") $1" in
   "samtools faidx") printf '>%s\nACGTTGCAACGTTGCAACGTTGCAACGTTGCAACGTTGCAACGTTGCAACG\n' "$3" ;;
   "samtools sort") cat > /dev/null ;;
+  "bedtools intersect") cat "$3" > "$PADFOOT_ARGV_LOG.a" ;;   # what bedtools found in the -a file
 esac
 exit 0
 """
@@ -78,6 +79,8 @@ class ExternalCommandArguments(unittest.TestCase):
         rm_bed = os.path.join(self.d.name, 'my annotations', 'rm.bed')
         annot.annot_bp_repeat({'DEL1': sv}, rm_bed)
         self.assertEqual(self.calls('bedtools'), [['intersect', '-a', 'temp_bps.bed', '-b', rm_bed, '-wb']])
+        with open(self.log + '.a') as fh:   # temp_bps.bed was complete when bedtools ran (it used to be empty)
+            self.assertEqual(fh.read(), 'chr19\t1214996\t1215006\tDEL1\tBP1\nchr19\t1222995\t1223005\tDEL1\tBP2\n')
 
 
 if __name__ == '__main__':

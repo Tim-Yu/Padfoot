@@ -1,5 +1,5 @@
 """Unit tests for pad_unlisted_segments() and get_repeat() (run: python3 -m unittest discover -s tests)."""
-import logging, os, sys, tempfile, unittest
+import logging, os, shutil, sys, tempfile, unittest
 from collections import defaultdict
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from padfoot import annot
@@ -177,6 +177,27 @@ class AnnotCNAs(unittest.TestCase):
         annot.annot_CNAs(genes, cnas, ploidy, by_gene)
         self.assertEqual(by_gene['PARD6G'].CN, ['NA', 'NA'])       # untouched default: copy number unknown (printed as NA)
         self.assertEqual(by_gene['STK11'].CN, [1.0, 1.0])          # neutral, outside the 5-6 Mb gain
+
+
+@unittest.skipUnless(shutil.which('bedtools'), 'bedtools not in PATH')
+class AnnotBpRepeat(unittest.TestCase):
+    def test_breakpoints_in_repeats_are_annotated(self):
+        # temp_bps.bed was still open (unflushed) when bedtools read it, so no breakpoint ever got a repeat class
+        svs = {'DEL1': make_sv(10), 'INS1': annot.SV(('chr3', 20000), '+', ('chr3', 20000), '-', 5, '', 'INS', 0.4, 'INS1',
+                                                       False, False, 'ACGT', '', '', 0, 0)}
+        cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as d:
+            os.chdir(d)
+            try:
+                with open('rm.bed', 'w') as fh:
+                    fh.write('chr3\t4000\t4500\tLINE/L1\n'        # no breakpoint
+                             'chr3\t8990\t9300\tSINE/Alu\n'       # DEL1 BP2 (9000)
+                             'chr3\t19000\t20003\tLTR/ERVL\n')    # INS1 (20000)
+                annot.annot_bp_repeat(svs, os.path.join(d, 'rm.bed'))
+            finally:
+                os.chdir(cwd)
+        self.assertEqual(svs['DEL1'].repeat_bp, ['', 'SINE/Alu'])
+        self.assertEqual(svs['INS1'].repeat_bp, ['LTR/ERVL', ''])
 
 
 class SV:  # minimal stand-in for annot.SV
