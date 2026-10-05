@@ -149,6 +149,64 @@ def make_sv(supp):
     return annot.SV(('chr3', 5000), '+', ('chr3', 9000), '-', supp, '', 'DEL', 0.4, 'DEL1', False, False, '', '', '', 0, 0)
 
 
+class ContigLengthsFromFai(unittest.TestCase):
+    """A Wakhan VCF without ##contig lines gives pysam contigs without a length; the padding then takes the lengths
+    from the reference .fai and must give exactly what the ##contig lines give."""
+    CONTIGS = '##contig=<ID=chr3,length=198295559>\n'
+    FAI = 'chr3\t198295559\t6\t60\t61\nchr4\t190214555\t201600330\t60\t61\nchrM\t16569\t394997123\t60\t61\n'
+    RECORDS = [wakhan_record('chr3', 87000001, 94000000, 0.0, 0.0), wakhan_record('chr3', 162807955, 162908546, 2.0, 1.0)]
+    GENES = {'chr3': [['BEFORE', 'IN_LOSS', 'IN_GAIN', 'AFTER'], [1000000, 90000000, 162850000, 190000000],
+                      [1050000, 90100000, 162860000, 190050000]],
+             'chr4': [['NO_SEGMENT'], [5000000], [5100000]]}
+
+    def run_cna(self, with_contigs, records, fai):
+        header = WAKHAN_HEADER if with_contigs else WAKHAN_HEADER.replace(self.CONTIGS, '')
+        if with_contigs:
+            header = header.replace(self.CONTIGS, self.CONTIGS + '##contig=<ID=chr4,length=190214555>\n')
+        with tempfile.TemporaryDirectory() as d:
+            vcf = os.path.join(d, 'w.vcf')
+            with open(vcf, 'w') as fh:
+                fh.write(header)
+                fh.writelines(records)
+            ref_fai = None
+            if fai:
+                ref_fai = os.path.join(d, 'ref.fa.fai')
+                with open(ref_fai, 'w') as fh:
+                    fh.write(self.FAI)
+            with self.assertLogs(level='INFO') as logs:
+                cnas, base = annot.get_CNA(vcf, [], ploidy=2.0, ref_fai=ref_fai)
+        by_gene = {}
+        annot.annot_CNAs(self.GENES, cnas, base, by_gene)
+        segs = {k: [(c.pos_1, c.pos_2, c.cn) for c in v] for k, v in cnas.items()}
+        genes = {g: (tuple(b.CN), tuple(b.CN_impact)) for g, b in by_gene.items()}
+        warnings = [r.getMessage() for r in logs.records if r.levelname == 'WARNING']
+        return segs, genes, warnings
+
+    def test_missing_contig_lines_are_padded_from_the_fai_exactly_as_with_them(self):
+        segs_ref, genes_ref, warn_ref = self.run_cna(True, self.RECORDS, fai=False)
+        segs, genes, warnings = self.run_cna(False, self.RECORDS, fai=True)
+        self.assertEqual(segs, segs_ref)
+        self.assertEqual(genes, genes_ref)
+        self.assertEqual(genes['BEFORE'], ((1.0, 1.0), ('NEUT', 'NEUT')))     # not the chr3 loss wrapped round (DEL/DEL)
+        self.assertEqual(genes['IN_LOSS'], ((0.0, 0.0), ('DEL', 'DEL')))
+        self.assertEqual(genes['AFTER'], ((1.0, 1.0), ('NEUT', 'NEUT')))      # not NA beyond the last segment
+        self.assertEqual(genes['NO_SEGMENT'], ((1.0, 1.0), ('NEUT', 'NEUT')))  # chromosome without a record
+        self.assertNotIn(('chrM', 1), segs)                                    # only primary or listed contigs are padded
+        self.assertEqual(warn_ref, [])
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn('ref.fa.fai', warnings[0])
+
+    def test_header_only_vcf_without_contig_lines(self):
+        segs, genes, warnings = self.run_cna(False, [], fai=True)
+        self.assertEqual(segs[('chr3', 1)], [(1, 198295559, 1.0)])
+        self.assertEqual(segs[('chr4', 2)], [(1, 190214555, 1.0)])
+        self.assertEqual(set(genes.values()), {((1.0, 1.0), ('NEUT', 'NEUT'))})
+
+    def test_no_length_anywhere_is_reported(self):
+        _, genes, warnings = self.run_cna(False, self.RECORDS, fai=False)
+        self.assertTrue(any('No length for contig(s) chr3' in w for w in warnings), warnings)
+
+
 class AnnotCNAs(unittest.TestCase):
     def cnas_for(self, records, contigs):
         header = WAKHAN_HEADER.replace('##contig=<ID=chr3,length=198295559>\n',

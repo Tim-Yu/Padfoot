@@ -466,7 +466,17 @@ def round_savana_cn(total_cn, minor_cn):
     minor_int = min(max(0, round_half_up(minor_cn)), total_int // 2)
     return total_int - minor_int, minor_int
 
-def get_CNA(cna_vcf, svs, ploidy=None):
+def read_fai_lengths(fai_path):
+    """{contig: length} from a samtools faidx index (.fai)."""
+    lens = {}
+    with open(fai_path) as fh:
+        for line in fh:
+            fields = line.split('\t')
+            if len(fields) >= 2:
+                lens[fields[0]] = int(fields[1])
+    return lens
+
+def get_CNA(cna_vcf, svs, ploidy=None, ref_fai=None):
     vcf = pysam.VariantFile(cna_vcf)
     hp1ls = defaultdict(list)
     hp2ls = defaultdict(list)
@@ -538,8 +548,23 @@ def get_CNA(cna_vcf, svs, ploidy=None):
     # bisect in a list that does not cover them: a gene before the first listed segment lands on index -1 (the
     # chromosome's LAST segment), a gene after the last one on that last segment, and chromosomes without any
     # listed segment are skipped altogether.
+    # The lengths come from the ##contig lines; a contig the header gives no length (a VCF without ##contig lines gives
+    # none) takes it from the reference .fai.
     primary = re.compile(r'^(chr)?([0-9]{1,2}|X|Y)$')
+    header_lens = {c: L for c, L in chr_lens.items() if L}
+    fai_lens = read_fai_lengths(ref_fai) if ref_fai and os.path.exists(ref_fai) else {}
+    chr_lens = {**fai_lens, **header_lens}
     pad_lens = {c: L for c, L in chr_lens.items() if L and (c in hp1ls or primary.match(c))}
+    from_fai = sorted(c for c in pad_lens if c not in header_lens)
+    if from_fai:
+        logger.warning("%s gives no ##contig length for %d padded contig(s) (%s): taken from %s", cna_vcf, len(from_fai),
+                       ', '.join(from_fai[:5]) + (', ...' if len(from_fai) > 5 else ''), ref_fai)
+    else:
+        logger.info("Copy-number padding: contig lengths from the ##contig lines of %s", cna_vcf)
+    unpadded = sorted(c for c in hp1ls if c not in pad_lens)
+    if unpadded:
+        logger.warning("No length for contig(s) %s in %s or the reference index: their unlisted bases are not padded "
+                       "with copy-neutral segments", ', '.join(unpadded), cna_vcf)
     hp1ls = pad_unlisted_segments(pad_lens, hp1ls)
     hp2ls = pad_unlisted_segments(pad_lens, hp2ls)
     for hp, hpls in enumerate([hp1ls, hp2ls]):
@@ -624,11 +649,12 @@ def find_segment_boundary_sv(svs, ref_id, pos, direction):
         candidates = [sv for sv in svs if (sv.bp_1 in boundary and sv.direction_1 == '+') or (sv.bp_2 in boundary and sv.direction_2 == '+')]
     return candidates[0] if candidates else ''
 
-def get_CNAs(cna_file, svs, caller='wakhan', ploidy=None):
-    """Returns (CNAs, baselines): baselines = [per-haplotype baseline] * 2, derived from the tumour ploidy."""
+def get_CNAs(cna_file, svs, caller='wakhan', ploidy=None, ref_fai=None):
+    """Returns (CNAs, baselines): baselines = [per-haplotype baseline] * 2, derived from the tumour ploidy. ref_fai (the
+    reference .fai) supplies the Wakhan padding the contig lengths a VCF without ##contig lines lacks."""
     if caller == 'savana':
         return get_savana_CNA(cna_file, svs, ploidy)
-    return get_CNA(cna_file, svs, ploidy)
+    return get_CNA(cna_file, svs, ploidy, ref_fai)
 
 def check_cn_altering_svs(svs, cn1_cov):
     for sv in svs:
@@ -1194,7 +1220,7 @@ def annotate_things(args):
     svs = get_SVs(vcf_file, args.sv_caller)
     cnas = []
     if cna_vcf:
-        cnas, baselines = get_CNAs(cna_vcf, svs, args.cna_caller, getattr(args, 'ploidy', None))
+        cnas, baselines = get_CNAs(cna_vcf, svs, args.cna_caller, getattr(args, 'ploidy', None), ref + '.fai')
         annot_CNAs(genes, cnas, baselines, by_gene)
     annot_SVS(genes, exon_pos, svs, by_gene)
     if args.specie == 'human':
