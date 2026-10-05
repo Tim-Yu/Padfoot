@@ -528,7 +528,11 @@ def get_CNA(cna_vcf, svs, ploidy=None):
             else:
                 LOH[ref_id]= [[pos_1],[pos_2]]
 
-    cn1_cov = int(np.median(cov1)) *0.75
+    has_segments = bool(hp1ls)
+    if not has_segments:
+        # Wakhan writes altered segments only, so a copy-neutral tumour gives a header-only VCF
+        logger.warning("%s lists no copy-number segment: the tumour is treated as copy-neutral (no AMP/DEL calls)", cna_vcf)
+    cn1_cov = int(np.median(cov1)) *0.75 if cov1 else 0
     # Wakhan's integer VCF lists altered segments only. Pad every primary chromosome (and any contig that has a
     # listed segment) with neutral one-copy-per-haplotype segments. Without this, annot_CNAs() looks genes up by
     # bisect in a list that does not cover them: a gene before the first listed segment lands on index -1 (the
@@ -562,7 +566,11 @@ def get_CNA(cna_vcf, svs, ploidy=None):
     for cnas in CNAs.values():
         for cna in cnas:
             cna.dir1 = cn_state(cna.cn, base)
-    check_cn_altering_svs(svs, cn1_cov)
+    if cn1_cov > 0:
+        check_cn_altering_svs(svs, cn1_cov)
+    elif has_segments:
+        logger.warning("Median per-copy coverage (COV1/CN1) in %s is unknown or below 1x: the copy-number-altering "
+                       "estimate of the SVs is skipped", cna_vcf)
     return (CNAs, [base, base])
 
 def get_savana_CNA(cna_tsv, svs, ploidy=None):

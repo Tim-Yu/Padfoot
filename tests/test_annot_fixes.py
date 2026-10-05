@@ -1,8 +1,10 @@
 """Unit tests for pad_unlisted_segments() and get_repeat() (run: python3 -m unittest discover -s tests)."""
-import os, sys, tempfile, unittest
+import logging, os, sys, tempfile, unittest
 from collections import defaultdict
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from padfoot import annot
+
+logger = logging.getLogger()
 
 
 class PadUnlistedSegments(unittest.TestCase):
@@ -100,6 +102,51 @@ class GetCNA(unittest.TestCase):
         self.assertEqual([(c.pos_1, c.pos_2, c.cn) for c in cnas[('chr3', 1)]],
                          [(1, 1000000, 1.0), (1000001, 3000000, 0.0), (3000001, 5000000, 1.0), (5000001, 6000000, 2.0),
                           (6000001, 198295559, 1.0)])
+
+    def get_cna(self, records, svs):
+        with tempfile.TemporaryDirectory() as d:
+            vcf = os.path.join(d, 'w.vcf')
+            with open(vcf, 'w') as fh:
+                fh.write(WAKHAN_HEADER)
+                fh.writelines(records)
+            with self.assertLogs(level='WARNING') as logs:
+                cnas, base = annot.get_CNA(vcf, svs, ploidy=2.0)
+                logger.warning('sentinel')   # assertLogs needs at least one record
+        return cnas, base, [r.getMessage() for r in logs.records if r.getMessage() != 'sentinel']
+
+    def test_header_only_vcf_is_copy_neutral(self):
+        # Wakhan writes altered segments only, so a copy-neutral tumour gives a header-only VCF; this used to crash in
+        # int(np.median([])) (ValueError: cannot convert float NaN to integer)
+        sv = make_sv(10)
+        cnas, base, warnings = self.get_cna([], [sv])
+        self.assertEqual(base, [1, 1])
+        for hp in (1, 2):
+            self.assertEqual([(c.pos_1, c.pos_2, c.cn, c.dir1) for c in cnas[('chr3', hp)]],
+                             [(1, 198295559, 1.0, 'NEUT')])
+        self.assertFalse(sv.cn_altering)
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn('lists no copy-number segment', warnings[0])
+
+    def test_per_copy_coverage_below_one_does_not_divide_by_zero(self):
+        # COV1/CN1 = 0.5 -> int(median) * 0.75 = 0 -> round(sv.supp / 0) used to raise ZeroDivisionError
+        sv = make_sv(10)
+        record = wakhan_record('chr3', 1000001, 2000000, 1.0, 1.0).replace(':15.0:15.0\n', ':0.5:0.5\n')
+        cnas, _, warnings = self.get_cna([record], [sv])
+        self.assertEqual([(c.pos_1, c.pos_2, c.cn) for c in cnas[('chr3', 1)]],
+                         [(1, 1000000, 1.0), (1000001, 2000000, 1.0), (2000001, 198295559, 1.0)])
+        self.assertFalse(sv.cn_altering)
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn('per-copy coverage', warnings[0])
+
+    def test_cn_altering_estimate_is_unchanged_with_normal_coverage(self):
+        sv = make_sv(22)
+        _, _, warnings = self.get_cna([wakhan_record('chr3', 1000001, 2000000, 2.0, 1.0)], [sv])
+        self.assertEqual(sv.cn_altering, 2)    # round(22 / (int(30 / 2) * 0.75))
+        self.assertEqual(warnings, [])
+
+
+def make_sv(supp):
+    return annot.SV(('chr3', 5000), '+', ('chr3', 9000), '-', supp, '', 'DEL', 0.4, 'DEL1', False, False, '', '', '', 0, 0)
 
 
 class AnnotCNAs(unittest.TestCase):
